@@ -137,6 +137,12 @@ def crawl(url, max_depth, session, visited=set(), saved_urls=set()):
 
         soup = BeautifulSoup(response.content, 'lxml')
 
+        # Check for noindex meta tag
+        robots_meta = soup.find('meta', attrs={'name': 'robots'})
+        if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
+            print(f"Skipping noindex page: {normalized_url}")
+            return
+
         title = soup.title.string if soup.title else ''
         description = get_meta_content(soup, 'description')
         keywords = get_meta_content(soup, 'keywords')
