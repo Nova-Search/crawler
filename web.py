@@ -10,13 +10,47 @@ from hashlib import md5
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 from io import BytesIO
+import sys
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
-FAVICON_DIR = "favicons"
+FAVICON_DIR = "../favicons"
 os.makedirs(FAVICON_DIR, exist_ok=True)
 conn = sqlite3.connect(DB_PATH)
 c = conn.cursor()
+
+def check_db_exists():
+    """Check if the database exists."""
+    if not os.path.exists(DB_PATH):
+        print("\033[1;33mWarning: Database does not exist.\033[0m")
+        choice = input("Do you want to recreate the database? (yes/no): ").strip().lower()
+        if choice == 'yes':
+            create_db()
+        else:
+            print("Stopping API.")
+            sys.exit(1)
+
+def create_db():
+    """Create the database and necessary tables."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE pages (
+            id INTEGER PRIMARY KEY,
+            url TEXT NOT NULL,
+            title TEXT,
+            description TEXT,
+            keywords TEXT,
+            priority INTEGER DEFAULT 0,
+            favicon_id TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("Database created successfully.")
+
+# Check if the database exists at startup
+check_db_exists()
 
 # Create table with extra metadata and priority field
 c.execute('''
