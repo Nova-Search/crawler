@@ -158,19 +158,22 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
     def attempt_request(use_stealth):
         headers = get_headers(use_stealth, referrer)
         try:
-            return session.get(normalized_url, headers=headers, timeout=5)
+            response = session.get(normalized_url, headers=headers, timeout=5)
+            print(f"Response {response.status_code} for {normalized_url} (Stealth: {use_stealth})")
+            return response
         except Exception as e:
-            print(f"Request failed for {normalized_url}: {e}")
+            print(f"Request failed for {normalized_url} (Stealth: {use_stealth}): {e}")
             return None
 
-    # Initial attempt without stealth (if partial_stealth is enabled)
-    response = attempt_request(False if partial_stealth else stealth_mode)
+    # Initial request with partial stealth consideration
+    response = attempt_request(stealth_mode if not partial_stealth else False)
 
-    # Retry with stealth if the first attempt failed (404/403) and partial stealth is enabled
+    # Retry logic: If 403/404 and partial stealth is enabled
     if response and response.status_code in (403, 404) and partial_stealth:
         print(f"Retrying with stealth mode for {normalized_url}")
         response = attempt_request(True)
 
+    # Skip pages if no valid response or not HTML content
     if not response or response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
         print(f"Skipping: {normalized_url} ({response.status_code if response else 'No Response'})")
         return
@@ -191,6 +194,7 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
         print(f"Skipping 404 page: {normalized_url}")
         return
 
+    # Database check and update logic
     c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
     row = c.fetchone()
 
@@ -209,6 +213,7 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
         print(f"Saved: {title} ({normalized_url})")
         update_priority(normalized_url, priority_adjustment)
 
+    # Recursively crawl links on the page
     for link in soup.find_all('a', href=True):
         full_url = urljoin(normalized_url, link['href'])
         if is_valid_link(full_url):
