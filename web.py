@@ -165,22 +165,28 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
             print(f"Request failed for {normalized_url} (Stealth: {use_stealth}): {e}")
             return None
 
-    # Initial request with partial stealth consideration
+    # Initial request attempt
     response = attempt_request(stealth_mode if not partial_stealth else False)
 
-    # Retry logic: If 403/404 and partial stealth is enabled
+    # If 403/404, retry with stealth if partial stealth is enabled
     if response and response.status_code in (403, 404) and partial_stealth:
         print(f"Retrying with stealth mode for {normalized_url}")
         response = attempt_request(True)
 
-    # Skip pages if no valid response or not HTML content
+    # Process even if it's a 404 to avoid unnecessary skips
+    if response and response.status_code == 404:
+        print(f"Processing 404 page: {normalized_url}")
+        save_page(normalized_url, "404", "Not Found", "Page not available")
+        return
+
+    # Skip if no valid response or non-HTML content
     if not response or response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
         print(f"Skipping: {normalized_url} ({response.status_code if response else 'No Response'})")
         return
 
     soup = BeautifulSoup(response.content, 'lxml')
 
-    # Check for noindex meta tag
+    # Handle noindex meta tags
     robots_meta = soup.find('meta', attrs={'name': 'robots'})
     if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
         print(f"Skipping noindex page: {normalized_url}")
@@ -190,11 +196,12 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
     description = get_meta_content(soup, 'description')
     keywords = get_meta_content(soup, 'keywords')
 
+    # Save or update page data
     if '404' in title or not title:
         print(f"Skipping 404 page: {normalized_url}")
         return
 
-    # Database check and update logic
+    # Save or update priority if needed
     c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
     row = c.fetchone()
 
@@ -213,7 +220,7 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
         print(f"Saved: {title} ({normalized_url})")
         update_priority(normalized_url, priority_adjustment)
 
-    # Recursively crawl links on the page
+    # Recursively crawl linked pages
     for link in soup.find_all('a', href=True):
         full_url = urljoin(normalized_url, link['href'])
         if is_valid_link(full_url):
