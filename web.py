@@ -146,7 +146,7 @@ def is_valid_link(link):
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
 def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(), saved_urls=set(), referrer=None):
-    """Recursive crawler that collects metadata."""
+    """Recursive crawler with enhanced 403/404 handling."""
     normalized_url = normalize_url(url)
 
     if max_depth == 0 or normalized_url in visited:
@@ -165,28 +165,27 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
             print(f"Request failed for {normalized_url} (Stealth: {use_stealth}): {e}")
             return None
 
-    # Initial request attempt
+    # Initial request (non-stealth if partial stealth is enabled)
     response = attempt_request(stealth_mode if not partial_stealth else False)
 
-    # If 403/404, retry with stealth if partial stealth is enabled
+    # Retry with stealth if 403/404 and partial stealth is enabled
     if response and response.status_code in (403, 404) and partial_stealth:
         print(f"Retrying with stealth mode for {normalized_url}")
         response = attempt_request(True)
 
-    # Process even if it's a 404 to avoid unnecessary skips
-    if response and response.status_code == 404:
-        print(f"Processing 404 page: {normalized_url}")
-        save_page(normalized_url, "404", "Not Found", "Page not available")
+    # If both attempts fail, log and skip
+    if not response or response.status_code in (403, 404):
+        print(f"Skipping: {normalized_url} ({response.status_code if response else 'No Response'})")
         return
 
-    # Skip if no valid response or non-HTML content
-    if not response or response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
-        print(f"Skipping: {normalized_url} ({response.status_code if response else 'No Response'})")
+    # Ensure valid HTML response
+    if 'text/html' not in response.headers.get('Content-Type', ''):
+        print(f"Skipping non-HTML content: {normalized_url}")
         return
 
     soup = BeautifulSoup(response.content, 'lxml')
 
-    # Handle noindex meta tags
+    # Check for noindex meta tag
     robots_meta = soup.find('meta', attrs={'name': 'robots'})
     if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
         print(f"Skipping noindex page: {normalized_url}")
@@ -196,29 +195,10 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
     description = get_meta_content(soup, 'description')
     keywords = get_meta_content(soup, 'keywords')
 
-    # Save or update page data
-    if '404' in title or not title:
-        print(f"Skipping 404 page: {normalized_url}")
-        return
-
-    # Save or update priority if needed
-    c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
-    row = c.fetchone()
-
-    priority_adjustment = 5 if is_home_page(normalized_url) else 0
-    priority_adjustment -= 3 if not description else 0
-
-    if row:
-        stored_title, stored_description, stored_keywords = row
-        if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
-            update_page(normalized_url, title, description, keywords)
-            print(f"Updated: {title} ({normalized_url})")
-        update_priority(normalized_url, priority_adjustment + 1)
-    else:
-        save_page(normalized_url, title, description, keywords)
-        saved_urls.add(normalized_url)
-        print(f"Saved: {title} ({normalized_url})")
-        update_priority(normalized_url, priority_adjustment)
+    # Save the page data
+    save_page(normalized_url, title, description, keywords)
+    saved_urls.add(normalized_url)
+    print(f"Saved: {title} ({normalized_url})")
 
     # Recursively crawl linked pages
     for link in soup.find_all('a', href=True):
