@@ -3,7 +3,7 @@ Web Crawler for Nova Search
 
 ## Usage
 Example usage:
-`python3 -u https://example.com -d 2`
+`python3 web.py -u https://example.com -d 2`
 
 - (Required) -u or --url
 URL to start crawling from
