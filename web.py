@@ -123,6 +123,15 @@ def save_page(url, title, description, keywords):
     ''', (url, title, description, keywords))
     conn.commit()
 
+def update_page(url, title, description, keywords):
+    """Update an existing page in the database."""
+    c.execute('''
+        UPDATE pages
+        SET title = ?, description = ?, keywords = ?
+        WHERE url = ?
+    ''', (title, description, keywords, url))
+    conn.commit()
+
 def get_meta_content(soup, name):
     """Extract meta tag content."""
     tag = soup.find('meta', attrs={'name': name})
@@ -169,13 +178,17 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
             print(f"Skipping 404 page: {normalized_url}")
             return
 
-        c.execute('SELECT 1 FROM pages WHERE url = ?', (normalized_url,))
-        exists = c.fetchone()
+        c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
+        row = c.fetchone()
 
         priority_adjustment = 5 if is_home_page(normalized_url) else 0
         priority_adjustment -= 3 if not description else 0
 
-        if exists:
+        if row:
+            stored_title, stored_description, stored_keywords = row
+            if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
+                update_page(normalized_url, title, description, keywords)
+                print(f"Updated: {title} ({normalized_url})")
             update_priority(normalized_url, priority_adjustment + 1)
         else:
             save_page(normalized_url, title, description, keywords)

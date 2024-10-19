@@ -44,14 +44,12 @@ def get_favicon_url_from_html(domain):
         response = requests.get(f"https://{domain}", timeout=5)
         soup = BeautifulSoup(response.content, "html.parser")
         
-        # Look for <link rel="icon" or <link rel="shortcut icon">
         icon_link = soup.find("link", rel=lambda value: value and "icon" in value.lower())
         if icon_link and icon_link.get("href"):
             return urljoin(f"https://{domain}", icon_link["href"])
     except requests.RequestException:
-        pass  # Fail silently, fallback will be used
+        pass  # Fail silently
 
-    # Default to /favicon.ico if no <link rel="icon"> is found
     return f"https://{domain}/favicon.ico"
 
 def convert_to_ico(image_content, output_path):
@@ -68,41 +66,35 @@ def download_favicon(domain):
         response = requests.get(favicon_url, headers=headers, timeout=5)
         if response.status_code == 200:
             content_type = response.headers.get('Content-Type', '').lower()
-
-            # Skip if the content is HTML
             if content_type.startswith('text/html'):
                 print(f"HTML content received instead of image for {domain}")
                 return domain, None
 
-            # Determine the appropriate file extension
-            if 'image/png' in content_type:
-                ext = 'png'
-            elif 'image/jpeg' in content_type:
-                ext = 'jpg'
-            elif 'image/svg+xml' in content_type:
-                ext = 'svg'
-            elif 'image/x-icon' in content_type or 'image/vnd.microsoft.icon' in content_type:
-                ext = 'ico'
-            elif 'image/webp' in content_type:
-                ext = 'webp'
-            elif 'image/avif' in content_type:
-                ext = 'avif'
-            else:
+            ext = {
+                'image/png': 'png',
+                'image/jpeg': 'jpg',
+                'image/svg+xml': 'svg',
+                'image/x-icon': 'ico',
+                'image/vnd.microsoft.icon': 'ico',
+                'image/webp': 'webp',
+                'image/avif': 'avif'
+            }.get(content_type, None)
+
+            if ext is None:
                 print(f"Unknown favicon type for {domain}: {content_type}")
-                return domain, None  # Skip unknown types
+                return domain, None
 
             favicon_hash = md5(favicon_url.encode()).hexdigest()
             file_path = os.path.join(FAVICON_DIR, f"{favicon_hash}.{ext}")
 
-            # Save the favicon directly
             with open(file_path, "wb") as f:
                 f.write(response.content)
 
             return domain, favicon_hash
     except requests.RequestException:
-        pass  # Fail silently if the request fails
+        pass
 
-    return domain, None  # Return None if download fails
+    return domain, None
 
 def batch_update_favicon_ids(updates):
     """Batch update the favicon IDs in the database."""
@@ -124,28 +116,22 @@ def crawl_for_favicons():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Get all unique domains/subdomains from the database
     cursor.execute("SELECT DISTINCT url FROM pages")
     urls = cursor.fetchall()
     conn.close()
 
-    processed_domains = set()
-    updates = []  # Store updates to batch later
-
-    # Extract domains and skip duplicates
     domains = {extract_domain(row["url"]) for row in urls}
 
-    # Use ThreadPoolExecutor for multithreading
+    updates = []
+
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(download_favicon, domain): domain for domain in domains}
 
-        # Use tqdm to track progress
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing domains", unit="domain"):
             domain, favicon_id = future.result()
             if favicon_id:
                 updates.append((favicon_id, f"%{domain}%"))
 
-    # Batch update all favicon IDs in the database
     if updates:
         batch_update_favicon_ids(updates)
 
