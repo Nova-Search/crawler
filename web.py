@@ -52,6 +52,7 @@ def create_db():
 check_db_exists()  # Check DB at startup
 
 conn = sqlite3.connect(DB_PATH)
+conn.execute('PRAGMA journal_mode=WAL;')  # Enable WAL mode
 c = conn.cursor()
 
 c.execute('''
