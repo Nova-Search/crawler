@@ -123,15 +123,6 @@ def save_page(url, title, description, keywords):
     ''', (url, title, description, keywords))
     conn.commit()
 
-def update_page(url, title, description, keywords):
-    """Update an existing page in the database."""
-    c.execute('''
-        UPDATE pages
-        SET title = ?, description = ?, keywords = ?
-        WHERE url = ?
-    ''', (title, description, keywords, url))
-    conn.commit()
-
 def get_meta_content(soup, name):
     """Extract meta tag content."""
     tag = soup.find('meta', attrs={'name': name})
@@ -145,7 +136,7 @@ def is_valid_link(link):
     )
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
-def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(), saved_urls=set(), referrer=None):
+def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), referrer=None):
     """Recursive crawler that collects metadata."""
     normalized_url = normalize_url(url)
 
@@ -155,64 +146,50 @@ def crawl(url, max_depth, session, stealth_mode, partial_stealth, visited=set(),
     visited.add(normalized_url)
     print(f'Crawling: {normalized_url}')
 
-    def attempt_request(use_stealth):
-        headers = get_headers(use_stealth, referrer)
-        try:
-            return session.get(normalized_url, headers=headers, timeout=5)
-        except Exception as e:
-            print(f"Request failed for {normalized_url}: {e}")
-            return None
+    try:
+        response = session.get(normalized_url, headers=get_headers(stealth_mode, referrer), timeout=5)
 
-    # Initial attempt without stealth (if partial_stealth is enabled)
-    response = attempt_request(False if partial_stealth else stealth_mode)
+        if response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
+            print(f"Skipping: {normalized_url} ({response.status_code})")
+            return
 
-    # Retry with stealth if the first attempt failed (404/403) and partial stealth is enabled
-    if response and response.status_code in (403, 404) and partial_stealth:
-        print(f"Retrying with stealth mode for {normalized_url}")
-        response = attempt_request(True)
+        soup = BeautifulSoup(response.content, 'lxml')
 
-    if not response or response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
-        print(f"Skipping: {normalized_url} ({response.status_code if response else 'No Response'})")
-        return
+        # Check for noindex meta tag
+        robots_meta = soup.find('meta', attrs={'name': 'robots'})
+        if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
+            print(f"Skipping noindex page: {normalized_url}")
+            return
 
-    soup = BeautifulSoup(response.content, 'lxml')
+        title = soup.title.string if soup.title else ''
+        description = get_meta_content(soup, 'description')
+        keywords = get_meta_content(soup, 'keywords')
 
-    # Check for noindex meta tag
-    robots_meta = soup.find('meta', attrs={'name': 'robots'})
-    if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
-        print(f"Skipping noindex page: {normalized_url}")
-        return
+        if '404' in title or not title:
+            print(f"Skipping 404 page: {normalized_url}")
+            return
 
-    title = soup.title.string if soup.title else ''
-    description = get_meta_content(soup, 'description')
-    keywords = get_meta_content(soup, 'keywords')
+        c.execute('SELECT 1 FROM pages WHERE url = ?', (normalized_url,))
+        exists = c.fetchone()
 
-    if '404' in title or not title:
-        print(f"Skipping 404 page: {normalized_url}")
-        return
+        priority_adjustment = 5 if is_home_page(normalized_url) else 0
+        priority_adjustment -= 3 if not description else 0
 
-    c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
-    row = c.fetchone()
+        if exists:
+            update_priority(normalized_url, priority_adjustment + 1)
+        else:
+            save_page(normalized_url, title, description, keywords)
+            saved_urls.add(normalized_url)
+            print(f"Saved: {title} ({normalized_url})")
+            update_priority(normalized_url, priority_adjustment)
 
-    priority_adjustment = 5 if is_home_page(normalized_url) else 0
-    priority_adjustment -= 3 if not description else 0
+        for link in soup.find_all('a', href=True):
+            full_url = urljoin(normalized_url, link['href'])
+            if is_valid_link(full_url):
+                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)  # Pass current URL as referrer
 
-    if row:
-        stored_title, stored_description, stored_keywords = row
-        if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
-            update_page(normalized_url, title, description, keywords)
-            print(f"Updated: {title} ({normalized_url})")
-        update_priority(normalized_url, priority_adjustment + 1)
-    else:
-        save_page(normalized_url, title, description, keywords)
-        saved_urls.add(normalized_url)
-        print(f"Saved: {title} ({normalized_url})")
-        update_priority(normalized_url, priority_adjustment)
-
-    for link in soup.find_all('a', href=True):
-        full_url = urljoin(normalized_url, link['href'])
-        if is_valid_link(full_url):
-            crawl(full_url, max_depth - 1, session, stealth_mode, partial_stealth, visited, saved_urls, referrer=normalized_url)
+    except Exception as e:
+        print(f'Error: {url} - {e}')
 
 def get_favicon_url_from_html(domain):
     """Try to find a favicon URL by parsing the HTML of the home page."""
@@ -292,15 +269,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Web crawler with favicon downloader.")
     parser.add_argument("-u", "--url", help="URL to start crawling")
     parser.add_argument("-d", "--depth", type=int, help="Crawl depth")
-    parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)")
-    parser.add_argument("-ps", "--partial-stealth", action="store_true", help="Enable partial stealth mode")
+    parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)") 
     args = parser.parse_args()
 
     session = requests.Session()
     saved_urls = set()
 
     print("Starting crawl...")
-    crawl(args.url, args.depth, session, args.stealth, args.partial_stealth, saved_urls=saved_urls)
+    crawl(args.url, args.depth, session, args.stealth, saved_urls=saved_urls)
     print("Crawl complete.")
 
     print("Starting favicon crawl...")
