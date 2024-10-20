@@ -235,7 +235,7 @@ def download_favicon(domain):
         content_type = response.headers.get('Content-Type', '').lower()
         if content_type.startswith('text/html'):  # Check content type *before* reading content
             print(f"HTML received instead of image for {domain}")
-            print("Response content:" + response.content.decode())
+            print("Response content:" + response.content.decode('utf-8', errors='replace'))
             return domain, None
 
         # Identify file extension from content type
