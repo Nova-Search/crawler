@@ -175,15 +175,17 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
         description = get_meta_content(soup, 'description')
         keywords = get_meta_content(soup, 'keywords')
 
-        if '404' in title or not title:
-            print(f"Skipping 404 page: {normalized_url}")
+        if '404' in title:
+            print(f"Skipping 404 page: {normalized_url} (found 404 in title)")
             return
 
         c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
         row = c.fetchone()
 
         priority_adjustment = 5 if is_home_page(normalized_url) else 0
+        priority_adjustment -= 5 if not title else 0
         priority_adjustment -= 3 if not description else 0
+        priority_adjustment += 1 if keywords else 0
 
         if row:
             stored_title, stored_description, stored_keywords = row
