@@ -12,6 +12,7 @@ from PIL import Image
 from io import BytesIO
 import sys
 import argparse
+import urllib.robotparser
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
@@ -146,11 +147,25 @@ def is_valid_link(link):
     )
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
+def is_allowed_by_robots(url, user_agent):
+    """Check if the URL is allowed to be crawled by robots.txt."""
+    parsed_url = urlparse(url)
+    robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
+    rp = urllib.robotparser.RobotFileParser()
+    rp.set_url(robots_url)
+    rp.read()
+    return rp.can_fetch(user_agent, url)
+
 def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), referrer=None):
     """Recursive crawler that collects metadata."""
     normalized_url = normalize_url(url)
 
     if max_depth == 0 or normalized_url in visited:
+        return
+
+    user_agent = random.choice(USER_AGENTS) if stealth_mode else DEFAULT_USER_AGENT
+    if not is_allowed_by_robots(normalized_url, user_agent):
+        print(f"Skipping {normalized_url} due to robots.txt")
         return
 
     visited.add(normalized_url)
