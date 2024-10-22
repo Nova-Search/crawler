@@ -88,7 +88,7 @@ def get_headers(stealth_mode, referrer=None):
 
     if stealth_mode:
         headers['User-Agent'] = random.choice(USER_AGENTS)
-        headers['Referer'] = referrer if referrer else 'https://www.google.com'  # Dynamic referrer or default
+        headers['Referer'] = referrer if referrer else 'https://novasearch.xyz'  # Dynamic referrer or default
         headers['Cache-Control'] = 'max-age=0'
         headers['Sec-Fetch-Dest'] = 'document'
         headers['Sec-Fetch-Mode'] = 'navigate'
