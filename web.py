@@ -12,10 +12,6 @@ from PIL import Image
 from io import BytesIO
 import sys
 import argparse
-import urllib.robotparser
-import xml.etree.ElementTree as ET
-from io import StringIO
-from urllib.parse import urlparse
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
@@ -150,60 +146,6 @@ def is_valid_link(link):
     )
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
-def parse_robots(url, user_agent):
-    """Custom parsing of robots.txt to resolve Allow/Disallow conflicts."""
-    parsed_url = urlparse(url)
-    robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
-
-    try:
-        response = requests.get(robots_url)
-        if response.status_code != 200:
-            print(f"Couldn't fetch robots.txt, assuming allowed.")
-            return True, None
-
-        robots_txt = response.text
-        sitemap_url = None
-        allow_rules, disallow_rules = [], []
-
-        # Parse robots.txt line-by-line
-        for line in StringIO(robots_txt):
-            line = line.strip()
-            if line.lower().startswith("sitemap:"):
-                sitemap_url = line.split(":", 1)[1].strip()
-            elif line.lower().startswith("user-agent:"):
-                current_agent = line.split(":", 1)[1].strip()
-            elif current_agent == "*" or current_agent == user_agent:
-                if line.lower().startswith("allow:"):
-                    allow_rules.append(line.split(":", 1)[1].strip())
-                elif line.lower().startswith("disallow:"):
-                    disallow_rules.append(line.split(":", 1)[1].strip())
-
-        # Resolve Allow/Disallow conflicts
-        is_allowed = any(url.startswith(allow) for allow in allow_rules) or not any(
-            url.startswith(disallow) for disallow in disallow_rules
-        )
-
-        print(f"Found sitemap: {sitemap_url}" if sitemap_url else "No sitemap found.")
-        print(f"{url} is {'allowed' if is_allowed else 'disallowed'} to be crawled.")
-        return is_allowed, sitemap_url
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return True, None  # Assume allowed if an error occurs
-    
-def parse_sitemap(sitemap_url):
-    """Parse the sitemap and extract all URLs."""
-    urls = set()
-    try:
-        response = requests.get(sitemap_url)
-        if response.status_code == 200:
-            root = ET.fromstring(response.content)
-            for url in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
-                urls.add(url.text)
-    except Exception as e:
-        print(f"Error parsing sitemap: {e}")
-    return urls
-
 def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), referrer=None):
     """Recursive crawler that collects metadata."""
     normalized_url = normalize_url(url)
@@ -211,20 +153,8 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
     if max_depth == 0 or normalized_url in visited:
         return
 
-    user_agent = random.choice(USER_AGENTS) if stealth_mode else DEFAULT_USER_AGENT
-    is_allowed, sitemap_url = parse_robots(normalized_url, user_agent)
-
-    if not is_allowed:
-        print(f"Skipping {normalized_url} due to robots.txt")
-        return
-
     visited.add(normalized_url)
     print(f'Crawling: {normalized_url}')
-
-    if sitemap_url:
-        sitemap_urls = parse_sitemap(sitemap_url)
-        for sitemap_link in sitemap_urls:
-            crawl(sitemap_link, max_depth - 1, session, stealth_mode, visited, saved_urls)
 
     try:
         response = session.get(normalized_url, headers=get_headers(stealth_mode, referrer), timeout=5)
@@ -272,7 +202,7 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
         for link in soup.find_all('a', href=True):
             full_url = urljoin(normalized_url, link['href'])
             if is_valid_link(full_url):
-                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)
+                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)  # Pass current URL as referrer
 
     except Exception as e:
         print(f'Error: {url} - {e}')
