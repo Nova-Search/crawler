@@ -28,7 +28,7 @@ def check_db_exists():
         if choice == 'yes':
             create_db()
         else:
-            print("Stopping API.")
+            print("Stopping crawler.")
             sys.exit(1)
 
 def create_db():
