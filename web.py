@@ -12,6 +12,7 @@ from PIL import Image
 from io import BytesIO
 import sys
 import argparse
+from datetime import datetime
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
@@ -42,7 +43,8 @@ def create_db():
             description TEXT,
             keywords TEXT,
             priority INTEGER DEFAULT 0,
-            favicon_id TEXT
+            favicon_id TEXT,
+            last_crawled TIMESTAMP
         )
     ''')
     conn.commit()
@@ -117,20 +119,25 @@ def update_priority(url, amount):
     conn.commit()
 
 def save_page(url, title, description, keywords):
-    """Save a new page to the database."""
+    """Save a new page to the database with timestamp."""
+    current_time = datetime.utcnow().isoformat()
     c.execute('''
-        INSERT INTO pages (url, title, description, keywords, priority)
-        VALUES (?, ?, ?, ?, 0)
-    ''', (url, title, description, keywords))
+        INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
+        VALUES (?, ?, ?, ?, 0, ?)
+    ''', (url, title, description, keywords, current_time))
     conn.commit()
 
 def update_page(url, title, description, keywords):
-    """Update an existing page in the database."""
+    """Update an existing page in the database with new timestamp."""
+    current_time = datetime.utcnow().isoformat()
     c.execute('''
         UPDATE pages
-        SET title = ?, description = ?, keywords = ?
+        SET title = ?, 
+            description = ?, 
+            keywords = ?,
+            last_crawled = ?
         WHERE url = ?
-    ''', (title, description, keywords, url))
+    ''', (title, description, keywords, current_time, url))
     conn.commit()
 
 def get_meta_content(soup, name):
@@ -179,7 +186,7 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
             print(f"Skipping 404 page: {normalized_url} (found 404 in title)")
             return
 
-        c.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
+        c.execute('SELECT title, description, keywords, last_crawled FROM pages WHERE url = ?', (normalized_url,))
         row = c.fetchone()
 
         priority_adjustment = 5 if is_home_page(normalized_url) else 0
@@ -188,10 +195,12 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
         priority_adjustment += 1 if keywords else 0
 
         if row:
-            stored_title, stored_description, stored_keywords = row
+            stored_title, stored_description, stored_keywords, last_crawled = row
             if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
                 update_page(normalized_url, title, description, keywords)
                 print(f"Updated: {title} ({normalized_url})")
+                if last_crawled:
+                    print(f"Last crawled: {last_crawled}")
             update_priority(normalized_url, priority_adjustment + 1)
         else:
             save_page(normalized_url, title, description, keywords)
@@ -202,7 +211,7 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
         for link in soup.find_all('a', href=True):
             full_url = urljoin(normalized_url, link['href'])
             if is_valid_link(full_url):
-                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)  # Pass current URL as referrer
+                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)
 
     except Exception as e:
         print(f'Error: {url} - {e}')
