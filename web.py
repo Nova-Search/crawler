@@ -129,7 +129,7 @@ def save_page(url, title, description, keywords):
 
 def update_page(url, title, description, keywords):
     """Update an existing page in the database with new timestamp."""
-    current_time = datetime.utcnow().isoformat()
+    current_time = datetime.now(UTC).isoformat()
     c.execute('''
         UPDATE pages
         SET title = ?, 

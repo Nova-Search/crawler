@@ -6,7 +6,7 @@ from tqdm import tqdm
 import os
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Constants ---
@@ -31,7 +31,7 @@ def connect_db():
 
 def get_stale_urls(conn):
     """Retrieve URLs where last_crawled is null or older than 14 days."""
-    cutoff_date = (datetime.utcnow() - timedelta(days=14)).isoformat()
+    cutoff_date = (datetime.now(UTC) - timedelta(days=14)).isoformat()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT url FROM pages
@@ -58,7 +58,7 @@ def normalize_url(url):
     return urlparse(url).geturl().rstrip('/')
 
 def update_page(conn, url, title, description, keywords):
-    current_time = datetime.utcnow().isoformat()
+    current_time = datetime.now(UTC).isoformat()
     conn.execute('''
         UPDATE pages
         SET title = ?, description = ?, keywords = ?, last_crawled = ?
@@ -67,7 +67,7 @@ def update_page(conn, url, title, description, keywords):
     conn.commit()
 
 def save_page(conn, url, title, description, keywords):
-    current_time = datetime.utcnow().isoformat()
+    current_time = datetime.now(UTC).isoformat()
     conn.execute('''
         INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
         VALUES (?, ?, ?, ?, 0, ?)
