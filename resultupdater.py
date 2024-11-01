@@ -74,13 +74,33 @@ def save_page(conn, url, title, description, keywords):
     ''', (url, title, description, keywords, current_time))
     conn.commit()
 
-def crawl(url, session, conn, stealth_mode):
+def remove_url(conn, url):
+    """Remove a URL from the database."""
+    conn.execute('DELETE FROM pages WHERE url = ?', (url,))
+    conn.commit()
+    tqdm.write(f"Removed: {url} (status: 4xx error)")
+
+def crawl(url, session, conn, stealth_mode, retries=3):
     try:
         response = session.get(url, headers=get_headers(stealth_mode), timeout=5)
-        if response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
+        
+        # Handle different status codes
+        if response.status_code == 429:  # Too Many Requests, retry later
+            if retries > 0:
+                tqdm.write(f"429 Too Many Requests for {url}. Retrying in 5 seconds...")
+                time.sleep(5)
+                return crawl(url, session, conn, stealth_mode, retries - 1)
+            else:
+                tqdm.write(f"Max retries reached for {url}. Skipping.")
+                return
+        elif 400 <= response.status_code < 500:  # Remove 4xx errors (excluding 429) from the database
+            remove_url(conn, url)
+            return
+        elif response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
             tqdm.write(f"Skipping: {url} (status: {response.status_code})")
             return
 
+        # Proceed with parsing and saving page data if response is successful
         soup = BeautifulSoup(response.content, 'lxml')
         title = soup.title.string if soup.title else ''
         description = soup.find('meta', attrs={'name': 'description'})
