@@ -12,7 +12,7 @@ from PIL import Image
 from io import BytesIO
 import sys
 import argparse
-from datetime import datetime
+from datetime import datetime, UTC
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
@@ -120,7 +120,7 @@ def update_priority(url, amount):
 
 def save_page(url, title, description, keywords):
     """Save a new page to the database with timestamp."""
-    current_time = datetime.utcnow().isoformat()
+    current_time = datetime.now(UTC).isoformat()
     c.execute('''
         INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
         VALUES (?, ?, ?, ?, 0, ?)
