@@ -13,11 +13,25 @@ from io import BytesIO
 import sys
 import argparse
 from datetime import datetime, UTC
+from queue import Queue
+from threading import Lock
+import threading
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
 FAVICON_DIR = "../favicons"
 os.makedirs(FAVICON_DIR, exist_ok=True)
+
+# Thread-safe queue for URLs
+url_queue = Queue()
+# Set for tracking visited URLs (needs lock)
+visited = set()
+visited_lock = Lock()
+# Set for tracking saved URLs (needs lock)
+saved_urls = set()
+saved_urls_lock = Lock()
+# Database connection lock
+db_lock = Lock()
 
 # --- Database Functions ---
 def check_db_exists():
@@ -33,40 +47,28 @@ def check_db_exists():
 
 def create_db():
     """Create the database and necessary tables."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE pages (
-            id INTEGER PRIMARY KEY,
-            url TEXT NOT NULL,
-            title TEXT,
-            description TEXT,
-            keywords TEXT,
-            priority INTEGER DEFAULT 0,
-            favicon_id TEXT,
-            last_crawled TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE pages (
+                id INTEGER PRIMARY KEY,
+                url TEXT NOT NULL,
+                title TEXT,
+                description TEXT,
+                keywords TEXT,
+                priority INTEGER DEFAULT 0,
+                favicon_id TEXT,
+                last_crawled TIMESTAMP
+            )
+        ''')
+        conn.commit()
     print("Database created successfully.")
 
-check_db_exists()  # Check DB at startup
-
-conn = sqlite3.connect(DB_PATH)
-conn.execute('PRAGMA journal_mode=WAL;')  # Enable WAL mode
-c = conn.cursor()
-
-c.execute('''
-    CREATE TABLE IF NOT EXISTS pages (
-        url TEXT PRIMARY KEY,
-        title TEXT,
-        description TEXT,
-        keywords TEXT,
-        favicon_id TEXT,
-        priority INTEGER DEFAULT 0
-    )
-''')
+def get_db_connection():
+    """Create a thread-local database connection."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('PRAGMA journal_mode=WAL;')
+    return conn
 
 # --- User-Agent Handling ---
 DEFAULT_USER_AGENT = "NovaCrawler/1.1"
@@ -115,30 +117,42 @@ def is_home_page(url):
 
 def update_priority(url, amount):
     """Update the priority of a page."""
-    c.execute('UPDATE pages SET priority = priority + ? WHERE url = ?', (amount, url))
-    conn.commit()
+    with db_lock:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('UPDATE pages SET priority = priority + ? WHERE url = ?', (amount, url))
+        conn.commit()
+        conn.close()
 
 def save_page(url, title, description, keywords):
     """Save a new page to the database with timestamp."""
     current_time = datetime.now(UTC).isoformat()
-    c.execute('''
-        INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
-        VALUES (?, ?, ?, ?, 0, ?)
-    ''', (url, title, description, keywords, current_time))
-    conn.commit()
+    with db_lock:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
+            VALUES (?, ?, ?, ?, 0, ?)
+        ''', (url, title, description, keywords, current_time))
+        conn.commit()
+        conn.close()
 
 def update_page(url, title, description, keywords):
     """Update an existing page in the database with new timestamp."""
     current_time = datetime.now(UTC).isoformat()
-    c.execute('''
-        UPDATE pages
-        SET title = ?, 
-            description = ?, 
-            keywords = ?,
-            last_crawled = ?
-        WHERE url = ?
-    ''', (title, description, keywords, current_time, url))
-    conn.commit()
+    with db_lock:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE pages
+            SET title = ?, 
+                description = ?, 
+                keywords = ?,
+                last_crawled = ?
+            WHERE url = ?
+        ''', (title, description, keywords, current_time, url))
+        conn.commit()
+        conn.close()
 
 def get_meta_content(soup, name):
     """Extract meta tag content."""
@@ -153,68 +167,104 @@ def is_valid_link(link):
     )
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
-def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), referrer=None):
-    """Recursive crawler that collects metadata."""
-    normalized_url = normalize_url(url)
+def worker(stealth_mode, max_depth):
+    """Worker function for threaded crawling."""
+    session = requests.Session()
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    if max_depth == 0 or normalized_url in visited:
-        return
+    while True:
+        try:
+            # Get URL and current depth from queue
+            url, depth = url_queue.get(timeout=5)
+            if depth > max_depth:
+                url_queue.task_done()
+                continue
 
-    visited.add(normalized_url)
-    print(f'Crawling: {normalized_url}')
+            normalized_url = normalize_url(url)
 
-    try:
-        response = session.get(normalized_url, headers=get_headers(stealth_mode, referrer), timeout=5)
+            # Check if URL has been visited
+            with visited_lock:
+                if normalized_url in visited:
+                    url_queue.task_done()
+                    continue
+                visited.add(normalized_url)
 
-        if response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
-            print(f"Skipping: {normalized_url} ({response.status_code})")
-            return
+            print(f'Thread-{threading.current_thread().name} crawling: {normalized_url}')
 
-        soup = BeautifulSoup(response.content, 'lxml')
+            # Fetch and process page
+            response = session.get(normalized_url, headers=get_headers(stealth_mode, None), timeout=5)
+            
+            if response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
+                url_queue.task_done()
+                continue
 
-        # Check for noindex meta tag
-        robots_meta = soup.find('meta', attrs={'name': 'robots'})
-        if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
-            print(f"Skipping noindex page: {normalized_url}")
-            return
+            soup = BeautifulSoup(response.content, 'lxml')
+            
+            # Extract metadata
+            title = soup.title.string if soup.title else ''
+            description = get_meta_content(soup, 'description')
+            keywords = get_meta_content(soup, 'keywords')
 
-        title = soup.title.string if soup.title else ''
-        description = get_meta_content(soup, 'description')
-        keywords = get_meta_content(soup, 'keywords')
+            # Update database
+            with db_lock:
+                cursor.execute('SELECT title, description, keywords FROM pages WHERE url = ?', (normalized_url,))
+                row = cursor.fetchone()
+                
+                if row:
+                    cursor.execute('''
+                        UPDATE pages
+                        SET title = ?, description = ?, keywords = ?, last_crawled = ?
+                        WHERE url = ?
+                    ''', (title, description, keywords, datetime.now(UTC).isoformat(), normalized_url))
+                else:
+                    cursor.execute('''
+                        INSERT INTO pages (url, title, description, keywords, last_crawled)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (normalized_url, title, description, keywords, datetime.now(UTC).isoformat()))
+                    with saved_urls_lock:
+                        saved_urls.add(normalized_url)
+                conn.commit()
 
-        if '404' in title:
-            print(f"Skipping 404 page: {normalized_url} (found 404 in title)")
-            return
+            # Add new URLs to queue
+            if depth < max_depth:
+                for link in soup.find_all('a', href=True):
+                    full_url = urljoin(normalized_url, link['href'])
+                    if is_valid_link(full_url):
+                        url_queue.put((full_url, depth + 1))
 
-        c.execute('SELECT title, description, keywords, last_crawled FROM pages WHERE url = ?', (normalized_url,))
-        row = c.fetchone()
+        except Queue.Empty:
+            break
+        except Exception as e:
+            print(f'Error in thread {threading.current_thread().name}: {e}')
+        finally:
+            url_queue.task_done()
 
-        priority_adjustment = 5 if is_home_page(normalized_url) else 0
-        priority_adjustment -= 5 if not title else 0
-        priority_adjustment -= 3 if not description else 0
-        priority_adjustment += 1 if keywords else 0
+    conn.close()
 
-        if row:
-            stored_title, stored_description, stored_keywords, last_crawled = row
-            if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
-                update_page(normalized_url, title, description, keywords)
-                print(f"Updated: {title} ({normalized_url})")
-                if last_crawled:
-                    print(f"Last crawled: {last_crawled}")
-            update_priority(normalized_url, priority_adjustment + 1)
-        else:
-            save_page(normalized_url, title, description, keywords)
-            saved_urls.add(normalized_url)
-            print(f"Saved: {title} ({normalized_url})")
-            update_priority(normalized_url, priority_adjustment)
+def crawl_with_threads(start_url, max_depth, stealth_mode, num_threads=10):
+    """Main function to start threaded crawling."""
+    check_db_exists()
+    
+    # Initialize the queue with the start URL
+    url_queue.put((start_url, 0))
 
-        for link in soup.find_all('a', href=True):
-            full_url = urljoin(normalized_url, link['href'])
-            if is_valid_link(full_url):
-                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)
+    # Create and start worker threads
+    threads = []
+    for _ in range(num_threads):
+        t = threading.Thread(target=worker, args=(stealth_mode, max_depth))
+        t.daemon = True
+        t.start()
+        threads.append(t)
 
-    except Exception as e:
-        print(f'Error: {url} - {e}')
+    # Wait for the queue to be empty
+    url_queue.join()
+
+    # Crawl favicons for all saved URLs
+    print("Starting favicon crawl...")
+    with saved_urls_lock:
+        crawl_for_favicons(saved_urls)
+    print("Favicon crawl complete.")
 
 def get_favicon_url_from_html(domain):
     """Try to find a favicon URL by parsing the HTML of the home page."""
@@ -285,27 +335,24 @@ def crawl_for_favicons(saved_urls):
             if favicon_id:
                 print(f"Downloaded favicon for {domain}")
 
-                c.execute('''
-                    UPDATE pages SET favicon_id = ?
-                    WHERE url LIKE ?
-                ''', (favicon_id, f'%{domain}%'))
-                conn.commit()
+                with db_lock:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute('''
+                        UPDATE pages SET favicon_id = ?
+                        WHERE url LIKE ?
+                    ''', (favicon_id, f'%{domain}%'))
+                    conn.commit()
+                    conn.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Web crawler with favicon downloader.")
-    parser.add_argument("-u", "--url", help="URL to start crawling")
-    parser.add_argument("-d", "--depth", type=int, help="Crawl depth")
-    parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)") 
+    parser = argparse.ArgumentParser(description="Multithreaded web crawler with favicon downloader.")
+    parser.add_argument("-u", "--url", required=True, help="URL to start crawling")
+    parser.add_argument("-d", "--depth", type=int, required=True, help="Crawl depth")
+    parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)")
+    parser.add_argument("-t", "--threads", type=int, default=10, help="Number of crawler threads")
     args = parser.parse_args()
 
-    session = requests.Session()
-    saved_urls = set()
-
-    print("Starting crawl...")
-    crawl(args.url, args.depth, session, args.stealth, saved_urls=saved_urls)
+    print(f"Starting crawl with {args.threads} threads...")
+    crawl_with_threads(args.url, args.depth, args.stealth, args.threads)
     print("Crawl complete.")
-
-    print("Starting favicon crawl...")
-    crawl_for_favicons(saved_urls)
-    print("Favicon crawl complete.")
-    conn.close()
