@@ -4,12 +4,9 @@ from urllib.parse import urljoin, urlparse
 import sqlite3
 from tqdm import tqdm
 import os
-import time
 import random
 from hashlib import md5
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from PIL import Image
-from io import BytesIO
 import sys
 import argparse
 from datetime import datetime, UTC
