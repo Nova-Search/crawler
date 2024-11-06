@@ -179,6 +179,11 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
         description = get_meta_content(soup, 'description')
         keywords = get_meta_content(soup, 'keywords')
 
+        if not description:
+            text_elements = soup.find_all(['p', 'pre'])
+            text_content = ' '.join(element.get_text() for element in text_elements)
+            description = text_content[:200]
+
         if '404' in title:
             print(f"Skipping 404 page: {normalized_url} (found 404 in title)")
             return
