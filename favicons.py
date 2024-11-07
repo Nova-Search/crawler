@@ -125,7 +125,7 @@ def crawl_for_favicons():
 
     updates = []
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=100) as executor:
         futures = {executor.submit(download_favicon, domain): domain for domain in domains}
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing domains", unit="domain"):
