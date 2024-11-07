@@ -68,7 +68,7 @@ def download_favicon(domain):
         if response.status_code == 200:
             content_type = response.headers.get('Content-Type', '').lower()
             if content_type.startswith('text/html'):
-                print(f"HTML content received instead of image for {domain}")
+                tqdm.write(f"HTML content received instead of image for {domain}")
                 return domain, None
 
             ext = {
@@ -82,7 +82,7 @@ def download_favicon(domain):
             }.get(content_type, None)
 
             if ext is None:
-                print(f"Unknown favicon type for {domain}: {content_type}")
+                tqdm.write(f"Unknown favicon type for {domain}: {content_type}")
                 return domain, None
 
             favicon_hash = md5(favicon_url.encode()).hexdigest()
@@ -108,7 +108,7 @@ def batch_update_favicon_ids(updates):
         )
         conn.commit()
     except sqlite3.Error as e:
-        print(f"Database update error: {e}")
+        tqdm.write(f"Database update error: {e}")
     finally:
         conn.close()
 
