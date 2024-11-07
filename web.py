@@ -10,8 +10,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 import argparse
 from datetime import datetime, UTC
-from contextlib import contextmanager
-import brotli
 
 # Initialize SQLite DB
 DB_PATH = "../links.db"
@@ -32,22 +30,40 @@ def check_db_exists():
 
 def create_db():
     """Create the database and necessary tables."""
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE pages (
-                url TEXT PRIMARY KEY,
-                title TEXT,
-                description TEXT,
-                keywords TEXT,
-                favicon_id TEXT,
-                priority INTEGER DEFAULT 0,
-                last_crawled TIMESTAMP
-            )
-        ''')
-        conn.commit()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE pages (
+            id INTEGER PRIMARY KEY,
+            url TEXT NOT NULL,
+            title TEXT,
+            description TEXT,
+            keywords TEXT,
+            priority INTEGER DEFAULT 0,
+            favicon_id TEXT,
+            last_crawled TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("Database created successfully.")
 
 check_db_exists()  # Check DB at startup
+
+conn = sqlite3.connect(DB_PATH)
+conn.execute('PRAGMA journal_mode=WAL;')  # Enable WAL mode
+c = conn.cursor()
+
+c.execute('''
+    CREATE TABLE IF NOT EXISTS pages (
+        url TEXT PRIMARY KEY,
+        title TEXT,
+        description TEXT,
+        keywords TEXT,
+        favicon_id TEXT,
+        priority INTEGER DEFAULT 0
+    )
+''')
 
 # --- User-Agent Handling ---
 DEFAULT_USER_AGENT = "NovaCrawler/1.1"
@@ -95,31 +111,31 @@ def is_home_page(url):
     return parsed_url.path in ('', '/')
 
 def update_priority(url, amount):
-    """Thread-safe priority update."""
-    with get_db() as db:
-        db.execute('UPDATE pages SET priority = priority + ? WHERE url = ?', (amount, url))
+    """Update the priority of a page."""
+    c.execute('UPDATE pages SET priority = priority + ? WHERE url = ?', (amount, url))
+    conn.commit()
 
 def save_page(url, title, description, keywords):
     """Save a new page to the database with timestamp."""
-    with get_db() as db:
-        current_time = datetime.now(UTC).isoformat()
-        db.execute('''
-            INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
-            VALUES (?, ?, ?, ?, 0, ?)
-        ''', (url, title, description, keywords, current_time))
+    current_time = datetime.now(UTC).isoformat()
+    c.execute('''
+        INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
+        VALUES (?, ?, ?, ?, 0, ?)
+    ''', (url, title, description, keywords, current_time))
+    conn.commit()
 
 def update_page(url, title, description, keywords):
     """Update an existing page in the database with new timestamp."""
-    with get_db() as db:
-        current_time = datetime.now(UTC).isoformat()
-        db.execute('''
-            UPDATE pages
-            SET title = ?, 
-                description = ?, 
-                keywords = ?,
-                last_crawled = ?
-            WHERE url = ?
-        ''', (title, description, keywords, current_time, url))
+    current_time = datetime.now(UTC).isoformat()
+    c.execute('''
+        UPDATE pages
+        SET title = ?, 
+            description = ?, 
+            keywords = ?,
+            last_crawled = ?
+        WHERE url = ?
+    ''', (title, description, keywords, current_time, url))
+    conn.commit()
 
 def get_meta_content(soup, name):
     """Extract meta tag content."""
@@ -134,84 +150,34 @@ def is_valid_link(link):
     )
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
-MAX_THREADS = 50  # Adjust based on system capabilities
-thread_local = threading.local()
-
-def get_session():
-    if not hasattr(thread_local, "session"):
-        thread_local.session = requests.Session()
-    return thread_local.session
-
-@contextmanager
-def get_db():
-    """Thread-safe database connection context manager"""
-    db = sqlite3.connect(DB_PATH)
-    db.execute('PRAGMA journal_mode=WAL;')
-    try:
-        yield db
-    finally:
-        db.commit()
-        db.close()
-
-def thread_safe_update_page(url, title, description, keywords):
-    """Thread-safe database update"""
-    with get_db() as db:
-        current_time = datetime.now(UTC).isoformat()
-        db.execute('''
-            UPDATE pages
-            SET title = ?, description = ?, keywords = ?, last_crawled = ?
-            WHERE url = ?
-        ''', (title, description, keywords, current_time, url))
-
-def thread_safe_save_page(url, title, description, keywords):
-    """Thread-safe database insert"""
-    with get_db() as db:
-        current_time = datetime.now(UTC).isoformat()
-        db.execute('''
-            INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
-            VALUES (?, ?, ?, ?, 0, ?)
-        ''', (url, title, description, keywords, current_time))
-
-saved_urls = set()
-saved_urls_lock = threading.Lock()
-
-def crawl_page(url, stealth_mode, referrer=None):
-    session = get_session()
+def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), referrer=None):
+    """Recursive crawler that collects metadata."""
     normalized_url = normalize_url(url)
-    links = set()
-    
+
+    if max_depth == 0 or normalized_url in visited:
+        return
+
+    visited.add(normalized_url)
+    tqdm.write(f'Crawling: {normalized_url}')
+
     try:
-        headers = get_headers(stealth_mode, referrer)
-        headers['Accept-Encoding'] = 'gzip, deflate, br'
-        
-        response = session.get(
-            normalized_url, 
-            headers=headers,
-            timeout=5
-        )
+        response = session.get(normalized_url, headers=get_headers(stealth_mode, referrer), timeout=5)
 
-        if response.status_code != 200:
-            return links
+        if response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type', ''):
+            tqdm.write(f"Skipping: {normalized_url} ({response.status_code})")
+            return
 
-        try:
-            content = response.text
-        except Exception as e:
-            try:
-                content = brotli.decompress(response.content).decode('utf-8')
-            except Exception as be:
-                content = response.content.decode('utf-8', errors='ignore')
+        soup = BeautifulSoup(response.content, 'lxml')
 
-        soup = BeautifulSoup(content, 'lxml')
-        
-        # Extract page data
+        # Check for noindex meta tag
+        robots_meta = soup.find('meta', attrs={'name': 'robots'})
+        if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
+            tqdm.write(f"Skipping noindex page: {normalized_url}")
+            return
+
         title = soup.title.string if soup.title else ''
         description = get_meta_content(soup, 'description')
         keywords = get_meta_content(soup, 'keywords')
-
-        if not description:
-            text_elements = soup.find_all(['p', 'pre'])
-            text_content = ' '.join(element.get_text() for element in text_elements)
-            description = text_content[:200]
 
         if '404' in title:
             tqdm.write(f"Skipping 404 page: {normalized_url} (found 404 in title)")
@@ -229,35 +195,23 @@ def crawl_page(url, stealth_mode, referrer=None):
             stored_title, stored_description, stored_keywords, last_crawled = row
             if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
                 update_page(normalized_url, title, description, keywords)
-                tqdm.write(f"Updated: {normalized_url}")
-            else:
-                save_page(normalized_url, title, description, keywords)
-                tqdm.write(f"Saved: {normalized_url}")
+                tqdm.write(f"Updated: {title} ({normalized_url})")
+                if last_crawled:
+                    tqdm.write(f"Last crawled: {last_crawled}")
+            update_priority(normalized_url, priority_adjustment + 1)
+        else:
+            save_page(normalized_url, title, description, keywords)
+            saved_urls.add(normalized_url)
+            tqdm.write(f"Saved: {title} ({normalized_url})")
+            update_priority(normalized_url, priority_adjustment)
 
-        # Continue with link collection
-        links_found = soup.find_all('a', href=True)
-        tqdm.write(f"Found {len(links_found)} links on {normalized_url}")
+        for link in soup.find_all('a', href=True):
+            full_url = urljoin(normalized_url, link['href'])
+            if is_valid_link(full_url):
+                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)
 
-        base_domain = urlparse(normalized_url).netloc
-        for link in links_found:
-            try:
-                full_url = urljoin(normalized_url, link['href'])
-                parsed = urlparse(full_url)
-                
-                if (parsed.scheme in ('http', 'https') and 
-                    is_valid_link(full_url) and
-                    parsed.netloc == base_domain):
-                    normalized_link = normalize_url(full_url)
-                    links.add(normalized_link)
-                    tqdm.write(f"Added: {normalized_link}")
-            except Exception as e:
-                pass  # Silently skip invalid links
-
-        return links
-        
     except Exception as e:
-        tqdm.write(f'Error crawling {url}: {str(e)}')
-        return set()
+        tqdm.write(f'Error: {url} - {e}')
 
 def get_favicon_url_from_html(domain):
     """Try to find a favicon URL by parsing the HTML of the home page."""
@@ -277,101 +231,79 @@ def get_favicon_url_from_html(domain):
 
 def download_favicon(domain):
     """Download the favicon for a given domain."""
+    favicon_url = get_favicon_url_from_html(domain)
+    headers = get_headers(stealth_mode=False)  # Don't need stealth for favicons
+
     try:
-        # Try multiple potential favicon locations
-        favicon_url = get_favicon_url_from_html(domain)
-        if not favicon_url:
-            favicon_url = f"https://{domain}/favicon.ico"  # Fallback
-        
-        response = requests.get(favicon_url, timeout=5)
-        if response.status_code != 200:
-            tqdm.write(f"No favicon found for {domain}")
-            return None
+        response = requests.get(favicon_url, headers=headers, timeout=5, stream=True)  # Stream for large files
+        response.raise_for_status()  # Raise an exception for bad status codes
 
-        # Generate unique filename
-        favicon_hash = md5(favicon_url.encode()).hexdigest()
-        ext = 'ico'  # Default extension
-        
-        # Get correct extension from content type
         content_type = response.headers.get('Content-Type', '').lower()
-        if 'png' in content_type:
-            ext = 'png'
-        elif 'jpg' in content_type or 'jpeg' in content_type:
-            ext = 'jpg'
-        elif 'svg' in content_type:
-            ext = 'svg'
-        
-        # Save favicon
-        file_path = os.path.join(FAVICON_DIR, f"{favicon_hash}.{ext}")
-        with open(file_path, 'wb') as f:
-            f.write(response.content)
-        
-        tqdm.write(f"Downloaded favicon for {domain}")
-        return favicon_hash
+        if content_type.startswith('text/html'):  # Check content type *before* reading content
+            tqdm.write(f"HTML received instead of image for {domain}")
+            return domain, None
 
-    except Exception as e:
-        tqdm.write(f"Error downloading favicon for {domain}: {e}")
-        return None
+        # Identify file extension from content type
+        ext = 'ico'  # Default to ICO if unknown
+        if 'image/png' in content_type:
+            ext = 'png'
+        elif 'image/jpeg' in content_type:
+            ext = 'jpg'
+        elif 'image/svg+xml' in content_type:
+            ext = 'svg'
+        elif 'image/webp' in content_type:
+            ext = 'webp'
+        elif 'image/avif' in content_type:
+            ext = 'avif'
+        elif 'image/gif' in content_type:
+            ext = 'gif'
+
+        # Save the favicon with a hash-based filename
+        favicon_hash = md5(favicon_url.encode()).hexdigest()
+        file_path = os.path.join(FAVICON_DIR, f"{favicon_hash}.{ext}")
+
+        with open(file_path, "wb") as f:
+            f.write(response.content)
+
+        return domain, favicon_hash
+    except requests.RequestException as e:
+        tqdm.write(f"Failed to download favicon from {favicon_url}: {e}")
+
+    return domain, None  # Return None if download fails
 
 def crawl_for_favicons(saved_urls):
-    """Download favicons for all saved URLs."""
+    """Download favicons for all saved URLs using multithreading."""
     domains = {urlparse(url).netloc for url in saved_urls}
-    
+
     with ThreadPoolExecutor(max_workers=10) as executor:
-        # Create a dictionary to track domain-future pairs
-        future_to_domain = {}
-        
-        # Submit jobs and track domains
-        for domain in domains:
-            future = executor.submit(download_favicon, domain)
-            future_to_domain[future] = domain
-        
-        # Process results
-        for future in tqdm(as_completed(future_to_domain), total=len(future_to_domain), desc="Downloading favicons"):
-            domain = future_to_domain[future]
-            try:
-                favicon_hash = future.result()
-                if favicon_hash:
-                    with get_db() as db:
-                        db.execute('UPDATE pages SET favicon_id = ? WHERE url LIKE ?', 
-                                 (favicon_hash, f'%{domain}%'))
-            except Exception as e:
-                tqdm.write(f"Error downloading favicon for {domain}: {e}")
+        futures = {executor.submit(download_favicon, domain): domain for domain in domains}
 
-def main():
-    parser = argparse.ArgumentParser(description="Multithreaded web crawler with favicon downloader.")
-    parser.add_argument("-u", "--url", help="URL to start crawling", required=True)
-    parser.add_argument("-d", "--depth", type=int, default=2, help="Crawl depth")
-    parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode")
-    args = parser.parse_args()
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing favicons"):
+            domain, favicon_id = future.result()
+            if favicon_id:
+                tqdm.write(f"Downloaded favicon for {domain}")
 
-    visited = set()
-    to_visit = {args.url}
-    all_found_urls = set()  # Track all URLs found during crawl
-
-    for depth in range(args.depth):
-        if not to_visit:
-            break
-            
-        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-            futures = {executor.submit(crawl_page, url, args.stealth): url 
-                      for url in to_visit if url not in visited}
-            
-            new_urls = set()
-            for future in tqdm(as_completed(futures), total=len(futures), 
-                             desc=f"Crawling depth {depth + 1}/{args.depth}"):
-                url = futures[future]
-                visited.add(url)
-                found_urls = future.result()
-                new_urls.update(found_urls)
-                all_found_urls.update(found_urls)  # Add to master list
-                all_found_urls.add(url)  # Add current URL too
-
-            to_visit = new_urls - visited
-
-    print("\nStarting favicon download...")
-    crawl_for_favicons(all_found_urls)
-    print("Crawl complete.")
+                c.execute('''
+                    UPDATE pages SET favicon_id = ?
+                    WHERE url LIKE ?
+                ''', (favicon_id, f'%{domain}%'))
+                conn.commit()
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Web crawler with favicon downloader.")
+    parser.add_argument("-u", "--url", help="URL to start crawling")
+    parser.add_argument("-d", "--depth", type=int, help="Crawl depth")
+    parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)") 
+    args = parser.parse_args()
+
+    session = requests.Session()
+    saved_urls = set()
+
+    print("Starting crawl...")
+    crawl(args.url, args.depth, session, args.stealth, saved_urls=saved_urls)
+    print("Crawl complete.")
+
+    print("Starting favicon crawl...")
+    crawl_for_favicons(saved_urls)
+    print("Favicon crawl complete.")
+    conn.close()
