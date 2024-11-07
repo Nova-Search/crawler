@@ -7,7 +7,6 @@ import os
 import random
 from hashlib import md5
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 import sys
 import argparse
 from datetime import datetime, UTC
@@ -206,16 +205,29 @@ def crawl_page(url, stealth_mode, referrer=None):
         
         # Extract page data
         title = soup.title.string if soup.title else ''
-        description = soup.find('meta', attrs={'name': 'description'})
-        description = description['content'] if description else ''
-        keywords = soup.find('meta', attrs={'name': 'keywords'})
-        keywords = keywords['content'] if keywords else ''
+        description = get_meta_content(soup, 'description')
+        keywords = get_meta_content(soup, 'keywords')
 
-        # Save/update in database
-        with get_db() as db:
-            cursor = db.cursor()
-            cursor.execute('SELECT 1 FROM pages WHERE url = ?', (normalized_url,))
-            if cursor.fetchone():
+        if not description:
+            text_elements = soup.find_all(['p', 'pre'])
+            text_content = ' '.join(element.get_text() for element in text_elements)
+            description = text_content[:200]
+
+        if '404' in title:
+            print(f"Skipping 404 page: {normalized_url} (found 404 in title)")
+            return
+
+        c.execute('SELECT title, description, keywords, last_crawled FROM pages WHERE url = ?', (normalized_url,))
+        row = c.fetchone()
+
+        priority_adjustment = 5 if is_home_page(normalized_url) else 0
+        priority_adjustment -= 5 if not title else 0
+        priority_adjustment -= 3 if not description else 0
+        priority_adjustment += 1 if keywords else 0
+
+        if row:
+            stored_title, stored_description, stored_keywords, last_crawled = row
+            if (stored_title != title) or (stored_description != description) or (stored_keywords != keywords):
                 update_page(normalized_url, title, description, keywords)
                 tqdm.write(f"Updated: {normalized_url}")
             else:
