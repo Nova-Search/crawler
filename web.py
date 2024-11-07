@@ -214,7 +214,7 @@ def crawl_page(url, stealth_mode, referrer=None):
             description = text_content[:200]
 
         if '404' in title:
-            print(f"Skipping 404 page: {normalized_url} (found 404 in title)")
+            tqdm.write(f"Skipping 404 page: {normalized_url} (found 404 in title)")
             return
 
         c.execute('SELECT title, description, keywords, last_crawled FROM pages WHERE url = ?', (normalized_url,))
@@ -270,7 +270,7 @@ def get_favicon_url_from_html(domain):
         if icon_link and icon_link.get("href"):
             return urljoin(f"https://{domain}", icon_link["href"])
     except requests.RequestException as e:
-        print(f"Error fetching HTML from {domain}: {e}")
+        tqdm.write(f"Error fetching HTML from {domain}: {e}")
     
     # Fallback to /favicon.ico if not found
     return f"https://{domain}/favicon.ico"
