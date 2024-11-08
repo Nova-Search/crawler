@@ -100,13 +100,18 @@ def get_headers(stealth_mode, referrer=None):
     return headers
 
 def normalize_url(url):
-    """Remove query parameters, fragments, and trailing slashes, except for specific URLs."""
+    """Remove fragments and trailing slashes, except for specific URLs."""
     parsed_url = urlparse(url)
-    if parsed_url.netloc in ('play.google.com', 'youtube.com') and parsed_url.path in ('/store/apps/details', '/watch'):
-        normalized = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', parsed_url.query, ''))
+    # Normalize hostname by removing www. if present
+    netloc = parsed_url.netloc
+    
+    if netloc == 'play.google.com' and parsed_url.path == '/store/apps/details':
+        normalized = urlunparse((parsed_url.scheme, netloc, parsed_url.path, '', parsed_url.query, ''))
+    elif netloc == 'youtube.com' or netloc == 'www.youtube.com' and parsed_url.path == '/watch':
+        normalized = urlunparse((parsed_url.scheme, netloc, parsed_url.path, '', parsed_url.query, ''))
     else:
-        normalized = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
-    return normalized.rstrip('/')
+        normalized = urlunparse((parsed_url.scheme, netloc, parsed_url.path.rstrip('/'), '', '', ''))
+    return normalized
 
 def is_home_page(url):
     """Check if the URL is a home page."""
