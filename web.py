@@ -102,7 +102,6 @@ def get_headers(stealth_mode, referrer=None):
 def normalize_url(url):
     """Remove fragments and trailing slashes, except for specific URLs."""
     parsed_url = urlparse(url)
-    # Normalize hostname by removing www. if present
     netloc = parsed_url.netloc
     
     if netloc == 'play.google.com' and parsed_url.path == '/store/apps/details':
