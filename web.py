@@ -309,7 +309,7 @@ def crawl_for_favicons(saved_urls):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Web crawler with favicon downloader.")
     parser.add_argument("-u", "--url", help="URL to start crawling")
-    parser.add_argument("-d", "--depth", type=int, help="Crawl depth")
+    parser.add_argument("-d", "--depth", type=int, help="Crawl depth", default=2)
     parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)") 
     parser.add_argument("-sd", "--same-domain", action="store_true", 
                         help="Only crawl URLs on the same domain as the starting URL")
