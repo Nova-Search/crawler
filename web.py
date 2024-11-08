@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 import sqlite3
 from tqdm import tqdm
 import os
@@ -103,9 +103,9 @@ def normalize_url(url):
     """Remove query parameters, fragments, and trailing slashes, except for specific URLs."""
     parsed_url = urlparse(url)
     if parsed_url.netloc in ('play.google.com', 'youtube.com') and parsed_url.path in ('/store/apps/details', '/watch'):
-        normalized = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{parsed_url.query}"
+        normalized = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', parsed_url.query, ''))
     else:
-        normalized = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        normalized = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
     return normalized.rstrip('/')
 
 def is_home_page(url):
