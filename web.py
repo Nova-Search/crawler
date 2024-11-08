@@ -150,11 +150,26 @@ def is_valid_link(link):
     )
     return not any(link.lower().endswith(ext) for ext in invalid_extensions)
 
-def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), referrer=None):
+def is_same_domain(url1, url2):
+    """Check if two URLs belong to the same domain."""
+    domain1 = urlparse(url1).netloc
+    domain2 = urlparse(url2).netloc
+    return domain1 == domain2
+
+def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), 
+          referrer=None, same_domain=False, base_domain=None):
     """Recursive crawler that collects metadata."""
     normalized_url = normalize_url(url)
+    
+    # Initialize base_domain on first call
+    if base_domain is None:
+        base_domain = urlparse(normalized_url).netloc
 
     if max_depth == 0 or normalized_url in visited:
+        return
+
+    # Add same-domain check
+    if same_domain and not is_same_domain(normalized_url, f"https://{base_domain}"):
         return
 
     visited.add(normalized_url)
@@ -208,7 +223,9 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
         for link in soup.find_all('a', href=True):
             full_url = urljoin(normalized_url, link['href'])
             if is_valid_link(full_url):
-                crawl(full_url, max_depth - 1, session, stealth_mode, visited, saved_urls, referrer=normalized_url)
+                crawl(full_url, max_depth - 1, session, stealth_mode, visited, 
+                      saved_urls, referrer=normalized_url, same_domain=same_domain, 
+                      base_domain=base_domain)
 
     except Exception as e:
         tqdm.write(f'Error: {url} - {e}')
@@ -294,13 +311,16 @@ if __name__ == "__main__":
     parser.add_argument("-u", "--url", help="URL to start crawling")
     parser.add_argument("-d", "--depth", type=int, help="Crawl depth")
     parser.add_argument("-s", "--stealth", action="store_true", help="Enable stealth mode (random user-agents)") 
+    parser.add_argument("-sd", "--same-domain", action="store_true", 
+                        help="Only crawl URLs on the same domain as the starting URL")
     args = parser.parse_args()
 
     session = requests.Session()
     saved_urls = set()
 
     print("Starting crawl...")
-    crawl(args.url, args.depth, session, args.stealth, saved_urls=saved_urls)
+    crawl(args.url, args.depth, session, args.stealth, saved_urls=saved_urls, 
+          same_domain=args.same_domain)
     print("Crawl complete.")
 
     print("Starting favicon crawl...")
