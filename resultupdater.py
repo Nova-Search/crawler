@@ -82,7 +82,7 @@ def remove_url(conn, url):
 
 def crawl(url, session, conn, stealth_mode, retries=3):
     try:
-        response = session.get(url, headers=get_headers(stealth_mode), timeout=5)
+        response = session.get(url, headers=get_headers(stealth_mode), timeout=10)
         
         # Handle different status codes
         if response.status_code == 429:  # Too Many Requests, retry later
