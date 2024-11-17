@@ -16,7 +16,7 @@ crawl_queue = Queue()
 crawl_status = {}
 
 # Database path
-DB_PATH = "./links.db"
+DB_PATH = "../links.db"
 
 def create_tables():
     """Create necessary tables for the dashboard"""
