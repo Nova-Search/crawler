@@ -114,7 +114,7 @@ def get_tasks():
     
     c.execute('''SELECT * FROM crawl_tasks 
                  ORDER BY created_at DESC 
-                 LIMIT 50''')
+                 LIMIT 15''')
     
     tasks = [dict(row) for row in c.fetchall()]
     conn.close()
