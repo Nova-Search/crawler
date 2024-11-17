@@ -12,8 +12,8 @@ import argparse
 from datetime import datetime, UTC
 
 # Initialize SQLite DB
-DB_PATH = "../links.db"
-FAVICON_DIR = "../favicons"
+DB_PATH = "./links.db"
+FAVICON_DIR = "./favicons"
 os.makedirs(FAVICON_DIR, exist_ok=True)
 
 # --- Database Functions ---
