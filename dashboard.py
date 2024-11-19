@@ -123,7 +123,7 @@ def reset_running_tasks():
     
     c.execute('''UPDATE crawl_tasks 
                  SET status = 'failed'
-                 WHERE status = 'running' ''')
+                 WHERE status IN ('running', 'pending')''')
     
     conn.commit()
     conn.close()
