@@ -11,6 +11,7 @@ import sys
 from io import StringIO
 import subprocess
 from pathlib import Path
+import time
 
 app = Flask(__name__)
 
@@ -27,21 +28,22 @@ DB_PATH = "../links.db"
 log_buffer = deque(maxlen=1000)  # Store last 1000 log entries
 log_lock = threading.Lock()
 
+# Modify create_tables() to add task_type column
 def create_tables():
     """Create necessary tables for the dashboard"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Create tasks table
     c.execute('''CREATE TABLE IF NOT EXISTS crawl_tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT NOT NULL,
-        depth INTEGER,
-        same_domain BOOLEAN,
-        stealth_mode BOOLEAN,
-        status TEXT,
-        created_at TIMESTAMP,
-        completed_at TIMESTAMP
+        url TEXT NULL,
+        depth INTEGER NULL,
+        same_domain BOOLEAN NULL,
+        stealth_mode BOOLEAN NULL,
+        status TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        completed_at TIMESTAMP,
+        task_type TEXT DEFAULT 'crawl'
     )''')
     
     conn.commit()
@@ -82,20 +84,31 @@ def background_crawler():
                         WHERE id = ?''', (task_id,))
             conn.commit()
             
-            # Setup progress capture
-            progress_capture = ProgressCapture()
-            sys.stdout = progress_capture
-            
-            # Import and run crawler
-            from web import crawl
-            session = requests.Session()
-            saved_urls = set()
-            
-            crawl(task['url'], task['depth'], session, task['stealth_mode'], 
-                 saved_urls=saved_urls, same_domain=task['same_domain'])
-            
-            # Restore stdout
-            sys.stdout = progress_capture._original_stdout
+            if task.get('task_type') == 'stale_update':
+                # Run stale update
+                resultupdater_path = Path(__file__).parent / 'resultupdater.py'
+                process = subprocess.Popen(['python3', str(resultupdater_path)],
+                                         stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT,
+                                         text=True)
+                
+                for line in process.stdout:
+                    capture_log(f"Stale Update: {line.strip()}")
+                
+                process.wait()
+            else:
+                # Regular crawl task
+                progress_capture = ProgressCapture()
+                sys.stdout = progress_capture
+                
+                from web import crawl
+                session = requests.Session()
+                saved_urls = set()
+                
+                crawl(task['url'], task['depth'], session, task['stealth_mode'], 
+                     saved_urls=saved_urls, same_domain=task['same_domain'])
+                
+                sys.stdout = progress_capture._original_stdout
             
             c.execute('''UPDATE crawl_tasks 
                         SET status = 'completed',
@@ -196,10 +209,74 @@ def update_stale():
             log_buffer.append(f"Error running resultupdater: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+# Modify periodic_stale_update()
+def periodic_stale_update():
+    """Create stale update tasks every hour"""
+    while True:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        c.execute('''INSERT INTO crawl_tasks 
+                     (task_type, status, created_at, url)
+                     VALUES ('stale_update', 'pending', ?, NULL)''',
+                  (datetime.now().isoformat(),))
+        
+        task_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        
+        # Add task to queue
+        crawl_queue.put({
+            'id': task_id,
+            'task_type': 'stale_update'
+        })
+        
+        time.sleep(3600)
+
+def migrate_database():
+    """Recreate table with nullable columns"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Backup existing data
+    c.execute("SELECT * FROM crawl_tasks")
+    existing_data = c.fetchall()
+    
+    # Drop and recreate table
+    c.execute("DROP TABLE IF EXISTS crawl_tasks")
+    
+    # Create new table
+    c.execute('''CREATE TABLE crawl_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NULL,
+        depth INTEGER NULL,
+        same_domain BOOLEAN NULL,
+        stealth_mode BOOLEAN NULL,
+        status TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        completed_at TIMESTAMP,
+        task_type TEXT DEFAULT 'crawl'
+    )''')
+    
+    # Restore data if any
+    if existing_data:
+        c.executemany('''INSERT INTO crawl_tasks VALUES (?,?,?,?,?,?,?,?,?)''', existing_data)
+    
+    conn.commit()
+    conn.close()
+
+# Modify the if __name__ == '__main__': block to:
 if __name__ == '__main__':
     create_tables()
-    reset_running_tasks()  # Reset running tasks to failed
+    migrate_database()  # Add this line
+    reset_running_tasks()
+    
     # Start background crawler thread
     crawler_thread = threading.Thread(target=background_crawler, daemon=True)
     crawler_thread.start()
+    
+    # Start periodic stale update thread
+    stale_thread = threading.Thread(target=periodic_stale_update, daemon=True)
+    stale_thread.start()
+    
     app.run(debug=False)

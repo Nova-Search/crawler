@@ -53,6 +53,11 @@
         .dark-mode .form-label {
             color: #e0e0e0;
         }
+
+        .dark-mode .badge.bg-info {
+            background-color: #0dcaf0 !important;
+            color: #000;
+        }
     </style>    
 </head>
 <body>
@@ -92,7 +97,7 @@
                             </div>
                             <div class="d-flex gap-2">
                                 <button type="submit" class="btn btn-primary">Start Crawl</button>
-                                <button type="button" id="updateStaleBtn" class="btn btn-warning">Update Stale Sites</button>
+                                <!-- <button type="button" id="updateStaleBtn" class="btn btn-warning">Update Stale Sites</button> -->
                             </div>
                         </form>
                     </div>
@@ -141,10 +146,25 @@
             taskList.innerHTML = tasks.map(task => `
                 <div class="card mb-2 ${document.body.classList.contains('dark-mode') ? 'dark-mode' : ''}">
                     <div class="card-body">
-                        <h6 class="card-subtitle text-muted">${task.url}</h6>
-                        <p>Status: <span class="badge bg-${getStatusColor(task.status)}">${task.status}</span></p>
-                        <small>Created: ${new Date(task.created_at).toLocaleString()}</small>
-                        ${task.completed_at ? `<br><small>Completed: ${new Date(task.completed_at).toLocaleString()}</small>` : ''}
+                        ${task.task_type === 'stale_update' ? `
+                            <h6 class="card-subtitle">
+                                <span class="badge bg-info">Stale Sites Update</span>
+                            </h6>
+                        ` : `
+                            <h6 class="card-subtitle text-muted">${task.url || 'No URL'}</h6>
+                            <small class="text-muted">
+                                Depth: ${task.depth}, 
+                                ${task.same_domain ? 'Same Domain, ' : ''}
+                                ${task.stealth_mode ? 'Stealth Mode' : 'Normal Mode'}
+                            </small>
+                        `}
+                        <p class="mt-2 mb-1">
+                            Status: <span class="badge bg-${getStatusColor(task.status)}">${task.status}</span>
+                        </p>
+                        <div class="text-muted" style="font-size: 0.8rem;">
+                            Created: ${new Date(task.created_at).toLocaleString()}
+                            ${task.completed_at ? `<br>Completed: ${new Date(task.completed_at).toLocaleString()}` : ''}
+                        </div>
                     </div>
                 </div>
             `).join('');
