@@ -231,7 +231,7 @@ def periodic_stale_update():
             'task_type': 'stale_update'
         })
         
-        time.sleep(3600)
+        time.sleep(1800)
 
 def migrate_database():
     """Recreate table with nullable columns"""
