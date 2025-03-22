@@ -1,13 +1,16 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import sqlite3
 from tqdm import tqdm
 import os
 import time
 import random
+from hashlib import md5
 from datetime import datetime, timedelta, UTC
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import BytesIO
+from PIL import Image
 
 # --- Constants ---
 DB_PATH = "../links.db"
@@ -35,7 +38,7 @@ def get_stale_urls(conn):
     cursor = conn.cursor()
     cursor.execute('''
         SELECT url FROM pages
-        WHERE last_crawled IS NULL OR last_crawled < ?
+        WHERE last_crawled IS NULL OR datetime(last_crawled) < datetime(?)
     ''', (cutoff_date,))
     return [row[0] for row in cursor.fetchall()]
 
@@ -57,21 +60,21 @@ def get_headers(stealth_mode, referrer=None):
 def normalize_url(url):
     return urlparse(url).geturl().rstrip('/')
 
-def update_page(conn, url, title, description, keywords):
+def update_page(conn, url, title, description, keywords, favicon_id=None):
     current_time = datetime.now(UTC).isoformat()
     conn.execute('''
         UPDATE pages
-        SET title = ?, description = ?, keywords = ?, last_crawled = ?
+        SET title = ?, description = ?, keywords = ?, last_crawled = ?, favicon_id = ?
         WHERE url = ?
-    ''', (title, description, keywords, current_time, url))
+    ''', (title, description, keywords, current_time, favicon_id, url))
     conn.commit()
 
-def save_page(conn, url, title, description, keywords):
+def save_page(conn, url, title, description, keywords, favicon_id=None):
     current_time = datetime.now(UTC).isoformat()
     conn.execute('''
-        INSERT INTO pages (url, title, description, keywords, priority, last_crawled)
-        VALUES (?, ?, ?, ?, 0, ?)
-    ''', (url, title, description, keywords, current_time))
+        INSERT INTO pages (url, title, description, keywords, priority, last_crawled, favicon_id)
+        VALUES (?, ?, ?, ?, 0, ?, ?)
+    ''', (url, title, description, keywords, current_time, favicon_id))
     conn.commit()
 
 def remove_url(conn, url):
@@ -79,6 +82,61 @@ def remove_url(conn, url):
     conn.execute('DELETE FROM pages WHERE url = ?', (url,))
     conn.commit()
     tqdm.write(f"Removed: {url} (status: 4xx error)")
+
+def get_favicon_url_from_html(domain):
+    """Try to find a favicon URL by parsing the HTML of the home page."""
+    try:
+        response = requests.get(f"https://{domain}", headers=get_headers(False), timeout=5)
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        # Search for <link rel="icon"> or <link rel="shortcut icon">
+        icon_link = soup.find("link", rel=lambda value: value and "icon" in value.lower())
+        if icon_link and icon_link.get("href"):
+            return urljoin(f"https://{domain}", icon_link["href"])
+    except requests.RequestException:
+        pass
+
+    # Fallback to /favicon.ico if not found
+    return f"https://{domain}/favicon.ico"
+
+def download_favicon(domain):
+    """Download the favicon for a given domain."""
+    favicon_url = get_favicon_url_from_html(domain)
+    headers = get_headers(stealth_mode=False)
+
+    try:
+        response = requests.get(favicon_url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            content_type = response.headers.get('Content-Type', '').lower()
+            if content_type.startswith('text/html'):
+                tqdm.write(f"HTML content received instead of image for {domain}")
+                return None
+
+            ext = {
+                'image/png': 'png',
+                'image/jpeg': 'jpg',
+                'image/svg+xml': 'svg',
+                'image/x-icon': 'ico',
+                'image/vnd.microsoft.icon': 'ico',
+                'image/webp': 'webp',
+                'image/avif': 'avif'
+            }.get(content_type, None)
+
+            if ext is None:
+                tqdm.write(f"Unknown favicon type for {domain}: {content_type}")
+                return None
+
+            favicon_hash = md5(favicon_url.encode()).hexdigest()
+            file_path = os.path.join(FAVICON_DIR, f"{favicon_hash}.{ext}")
+
+            with open(file_path, "wb") as f:
+                f.write(response.content)
+
+            return favicon_hash
+    except requests.RequestException:
+        pass
+
+    return None
 
 def crawl(url, session, conn, stealth_mode, retries=3):
     try:
@@ -108,13 +166,16 @@ def crawl(url, session, conn, stealth_mode, retries=3):
         keywords = soup.find('meta', attrs={'name': 'keywords'})
         keywords = keywords['content'] if keywords else ''
 
+        domain = urlparse(url).netloc
+        favicon_id = download_favicon(domain)
+
         cursor = conn.cursor()
         cursor.execute('SELECT 1 FROM pages WHERE url = ?', (url,))
         if cursor.fetchone():
-            update_page(conn, url, title, description, keywords)
+            update_page(conn, url, title, description, keywords, favicon_id)
             tqdm.write(f"Updated: {url}")
         else:
-            save_page(conn, url, title, description, keywords)
+            save_page(conn, url, title, description, keywords, favicon_id)
             tqdm.write(f"Saved: {url}")
 
     except Exception as e:
