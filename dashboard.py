@@ -21,6 +21,8 @@ crawl_queue = Queue()
 # Store crawl status
 crawl_status = {}
 
+canceled_tasks = set()
+
 # Database path
 DB_PATH = "../links.db"
 
@@ -70,7 +72,7 @@ class ProgressCapture:
 
 # Modify background_crawler function
 def background_crawler():
-    """Background thread to process the crawl queue"""
+    """Background thread to process the crawl queue."""
     while True:
         task = crawl_queue.get()
         task_id = task['id']
@@ -79,20 +81,33 @@ def background_crawler():
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             
+            # Check if the task has been canceled
+            c.execute('SELECT status FROM crawl_tasks WHERE id = ?', (task_id,))
+            status = c.fetchone()
+            if status and status[0] == 'canceled':
+                capture_log(f"Task {task_id} has been canceled.")
+                conn.close()
+                crawl_queue.task_done()
+                continue
+            
             c.execute('''UPDATE crawl_tasks 
-                        SET status = 'running' 
-                        WHERE id = ?''', (task_id,))
+                         SET status = 'running' 
+                         WHERE id = ?''', (task_id,))
             conn.commit()
             
             if task.get('task_type') == 'stale_update':
                 # Run stale update
                 resultupdater_path = Path(__file__).parent / 'resultupdater.py'
                 process = subprocess.Popen(['python3', str(resultupdater_path)],
-                                         stdout=subprocess.PIPE,
-                                         stderr=subprocess.STDOUT,
-                                         text=True)
+                                           stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT,
+                                           text=True)
                 
                 for line in process.stdout:
+                    if task_id in canceled_tasks:
+                        capture_log(f"Task {task_id} has been canceled mid-execution.")
+                        process.terminate()
+                        break
                     capture_log(f"Stale Update: {line.strip()}")
                 
                 process.wait()
@@ -105,15 +120,27 @@ def background_crawler():
                 session = requests.Session()
                 saved_urls = set()
                 
+                # Pass a callback to check for cancellation
+                def is_canceled():
+                    return task_id in canceled_tasks
+                
                 crawl(task['url'], task['depth'], session, task['stealth_mode'], 
-                     saved_urls=saved_urls, same_domain=task['same_domain'])
+                      saved_urls=saved_urls, same_domain=task['same_domain'], 
+                      is_canceled=is_canceled)
                 
                 sys.stdout = progress_capture._original_stdout
             
-            c.execute('''UPDATE crawl_tasks 
-                        SET status = 'completed',
-                        completed_at = ? 
-                        WHERE id = ?''', (datetime.now().isoformat(), task_id))
+            if task_id in canceled_tasks:
+                capture_log(f"Task {task_id} was canceled mid-execution.")
+                c.execute('''UPDATE crawl_tasks 
+                             SET status = 'canceled',
+                             completed_at = ? 
+                             WHERE id = ?''', (datetime.now().isoformat(), task_id))
+            else:
+                c.execute('''UPDATE crawl_tasks 
+                             SET status = 'completed',
+                             completed_at = ? 
+                             WHERE id = ?''', (datetime.now().isoformat(), task_id))
             conn.commit()
             
         except Exception as e:
@@ -121,13 +148,15 @@ def background_crawler():
             if 'progress_capture' in locals():
                 sys.stdout = progress_capture._original_stdout
             c.execute('''UPDATE crawl_tasks 
-                        SET status = ?,
-                        completed_at = ? 
-                        WHERE id = ?''', (f'failed: {str(e)}', datetime.now().isoformat(), task_id))
+                         SET status = ?,
+                         completed_at = ? 
+                         WHERE id = ?''', (f'failed: {str(e)}', datetime.now().isoformat(), task_id))
             conn.commit()
         finally:
             conn.close()
             crawl_queue.task_done()
+            # Remove the task ID from the canceled_tasks set
+            canceled_tasks.discard(task_id)
 
 def reset_running_tasks():
     """Set the state of any 'running' tasks to 'failed'"""
@@ -181,6 +210,23 @@ def get_tasks():
     conn.close()
     
     return jsonify(tasks)
+
+@app.route('/cancel_task/<int:task_id>', methods=['POST'])
+def cancel_task(task_id):
+    """Cancel a task by marking its status as 'canceled'."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute('''UPDATE crawl_tasks 
+                 SET status = 'canceled' 
+                 WHERE id = ? AND status IN ('pending', 'running')''', (task_id,))
+    conn.commit()
+    conn.close()
+    
+    # Add the task ID to the canceled_tasks set
+    canceled_tasks.add(task_id)
+    
+    return jsonify({'success': True, 'task_id': task_id})
 
 # Add new route for logs
 @app.route('/logs')
@@ -279,4 +325,4 @@ if __name__ == '__main__':
     stale_thread = threading.Thread(target=periodic_stale_update, daemon=True)
     stale_thread.start()
     
-    app.run(debug=False)
+    app.run(debug=False, port=5001)

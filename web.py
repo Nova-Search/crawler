@@ -164,7 +164,7 @@ def is_same_domain(url1, url2):
     return domain1 == domain2
 
 def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set(), 
-          referrer=None, same_domain=False, base_domain=None):
+          referrer=None, same_domain=False, base_domain=None, is_canceled=lambda: False):
     """Recursive crawler that collects metadata."""
     normalized_url = normalize_url(url)
     
@@ -181,6 +181,11 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
 
     visited.add(normalized_url)
     tqdm.write(f'Crawling: {normalized_url}')
+
+    # Check if the task has been canceled
+    if is_canceled():
+        tqdm.write(f"Task canceled during crawl: {normalized_url}")
+        return
 
     try:
         response = session.get(normalized_url, headers=get_headers(stealth_mode, referrer), timeout=5)
@@ -228,11 +233,16 @@ def crawl(url, max_depth, session, stealth_mode, visited=set(), saved_urls=set()
             update_priority(normalized_url, priority_adjustment)
 
         for link in soup.find_all('a', href=True):
+            # Check if the task has been canceled
+            if is_canceled():
+                tqdm.write(f"Task canceled during link processing: {normalized_url}")
+                return
+
             full_url = urljoin(normalized_url, link['href'])
             if is_valid_link(full_url):
                 crawl(full_url, max_depth - 1, session, stealth_mode, visited, 
                       saved_urls, referrer=normalized_url, same_domain=same_domain, 
-                      base_domain=base_domain)
+                      base_domain=base_domain, is_canceled=is_canceled)
 
     except Exception as e:
         tqdm.write(f'Error: {url} - {e}')
